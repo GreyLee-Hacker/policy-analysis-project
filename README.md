@@ -9,25 +9,22 @@ policy-analysis-project/
 ├── data/                  # 数据目录
 │   ├── input/             # 输入文件目录
 │   └── output/            # 输出结果目录
-│       ├── qwen-turbo/    # 通义千问-turbo模型输出
-│       ├── qwen-plus/     # 通义千问-plus模型输出
-│       ├── qwen-max/      # 通义千问-max模型输出
-│       ├── qwen2-7b-instruct/ # 通义千问2-7b模型输出
-│       ├── qwen2-72b-instruct/ # 通义千问2-72b模型输出
-│       ├── qwen-72b-chat/ # 通义千问-72b模型输出
-│       └── all/           # 所有模型结果汇总
-├── guangzhou_1/           # 广州市政策文档集合
-│   └── 机关_*/            # 按机关分类的政策文件
 ├── logs/                  # 日志文件目录
 ├── scripts/               # 脚本文件
 │   ├── run_analysis.py    # 主分析脚本
 │   ├── check_available_models.py  # 检查可用模型
-│   └── test_multiple_models.py    # 测试多个模型
+│   ├── list_available_models.py   # 检查可用模型
+│   ├── manage_models.py   # 模型管理器
+│   ├── handle_model_errors.py     # 错误处理器
+│   ├── test_multiple_models.py    # 测试多个模型
+│   └── ...
 ├── src/                   # 源代码
 │   ├── config/            # 配置文件
 │   ├── core/              # 核心功能
 │   ├── services/          # 服务组件
 │   └── utils/             # 工具函数
+├── tests/                 # 测试脚本
+├── setup.py               # 快速初始化
 └── .env                   # 环境变量配置文件
 ```
 
@@ -62,8 +59,6 @@ pip install -r requirements.txt
 - JSON文件
 - Markdown文件
 
-此外，项目已包含`guangzhou_1`目录下的广州市政策文档集合，可直接用于分析。
-
 ### 2. 检查可用模型
 
 ```bash
@@ -89,7 +84,7 @@ python scripts/test_multiple_models.py --models qwen-turbo,ernie-bot
 python scripts/test_multiple_models.py --prompt "分析广州市住房政策变化趋势"
 
 # 组合使用多个参数
-python scripts/test_multiple_models.py --models qwen-max --input data/input/example.txt
+python scripts/test_multiple_models.py --models qwen-max --prompt "分析广州市住房政策变化趋势"
 ```
 
 ### 4. 模型管理工具
@@ -109,8 +104,8 @@ python scripts/manage_models.py
 - **测试API连接**: 测试阿里云、OpenAI和百度API的连接状态
 - **自动代码更新功能**：当您添加新的阿里云模型时，工具会自动修改src/services/llm_service.py文件以支持该模型，无需手动编写代码。如果您添加非阿里云类别的模型（如百度、OpenAI等），可能需要手动扩展相应的代码。
 
-示例操作:
-![模型管理工具演示](docs/images/model_management_tool.png)
+<!-- 示例操作: -->
+<!-- ![模型管理工具演示](docs/images/model_management_tool.png) -->
 
 ### 5. 提示词模板选择
 
@@ -165,7 +160,7 @@ python scripts/run_analysis.py --models qwen-turbo,qwen-max
 # 指定提示词模板
 python scripts/run_analysis.py --template public
 
-# 指定输入文件
+# 指定输入文件（此处的根目录必须是项目根目录） 
 python scripts/run_analysis.py --input data/input/specific_file.txt
 
 # 综合使用多个参数
@@ -174,7 +169,7 @@ python scripts.run_analysis.py --models qwen-max,qwen2-72b-instruct --template e
 
 ### 7. 查看结果
 
-分析结果将保存在`data/output/`目录中，每个模型的结果会保存在单独的JSON文件中。
+分析结果将保存在`data/output/`目录中，每个模型的结果会保存在单独的JSON文件中，同时各个模型的结果也会汇总到all文件夹中便于模型比较。
 日志文件保存在`logs/`目录，可用于查看处理过程和诊断问题。
 
 ## 配置提示词模板
@@ -281,6 +276,6 @@ TEMPLATES["tax"] = TAX_ANALYSIS_TEMPLATE
    - 使用模型管理工具添加新的可用模型
    - 确保您的API密钥有权限访问这些模型
 
-## 授权协议
+<!-- ## 授权协议 -->
 
-本项目采用MIT许可证。详情请参阅LICENSE文件。
+<!-- 本项目采用MIT许可证。详情请参阅LICENSE文件。 -->
