@@ -1,0 +1,43 @@
+# 忽略数据目录中的所有内容，但保留目录结构
+/data/*
+!/data/.gitkeep
+!/data/input/
+/data/input/*
+!/data/input/.gitkeep
+!/data/output/
+/data/output/*
+!/data/output/.gitkeep
+!/data/output/qwen-turbo/
+/data/output/qwen-turbo/*
+!/data/output/qwen-turbo/.gitkeep
+!/data/output/qwen-plus/
+/data/output/qwen-plus/*
+!/data/output/qwen-plus/.gitkeep
+!/data/output/qwen-max/
+/data/output/qwen-max/*
+!/data/output/qwen-max/.gitkeep
+!/data/output/qwen2-7b-instruct/
+/data/output/qwen2-7b-instruct/*
+!/data/output/qwen2-7b-instruct/.gitkeep
+!/data/output/qwen2-72b-instruct/
+/data/output/qwen2-72b-instruct/*
+!/data/output/qwen2-72b-instruct/.gitkeep
+!/data/output/qwen-72b-chat/
+/data/output/qwen-72b-chat/*
+!/data/output/qwen-72b-chat/.gitkeep
+!/data/output/all/
+/data/output/all/*
+!/data/output/all/.gitkeep
+
+# 忽略日志文件夹的内容，但保留文件夹
+/logs/*
+!/logs/.gitkeep
+
+# 完全忽略guangzhou_1文件夹
+/guangzhou_1/
+
+# 忽略其他临时文件
+*.log
+*.pyc
+__pycache__/
+.DS_Store
