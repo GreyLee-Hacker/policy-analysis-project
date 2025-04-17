@@ -136,14 +136,24 @@ def save_results(sentence_results, filename, output_dir, template_name=None):
         "sentences": []
     }
     
-    # 为每个模型创建子目录
+    # 为每个模型创建子目录和模型特定结果集合
     model_dirs = {}
+    model_results = {}  # 用于存储每个模型的结果
+    
     for sentence_result in sentence_results:
         for model_name in sentence_result["results"].keys():
             if model_name not in model_dirs:
                 model_output_dir = os.path.join(template_output_dir, model_name)
                 os.makedirs(model_output_dir, exist_ok=True)
                 model_dirs[model_name] = model_output_dir
+                # 为每个模型初始化结果集合
+                model_results[model_name] = {
+                    "filename": filename,
+                    "model": model_name,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "total_sentences": len(sentence_results),
+                    "sentences": []
+                }
     
     # 处理每个句子的结果，并添加到汇总
     for sentence_result in sentence_results:
@@ -164,10 +174,32 @@ def save_results(sentence_results, filename, output_dir, template_name=None):
                 if isinstance(content, str) and "policy_object:" in content and "policy_stage:" in content:
                     parsed_content = parse_housing_elements(content)
                     sentence_entry["models"][model_name] = parsed_content
+                    
+                    # 同时将解析后的内容添加到模型特定结果中
+                    model_sentence_entry = {
+                        "text": sentence,
+                        "parsed_content": parsed_content
+                    }
+                    model_results[model_name]["sentences"].append(model_sentence_entry)
                 else:
                     sentence_entry["models"][model_name] = content
+                    
+                    # 将原始内容添加到模型特定结果中
+                    model_sentence_entry = {
+                        "text": sentence,
+                        "content": content
+                    }
+                    model_results[model_name]["sentences"].append(model_sentence_entry)
             else:
-                sentence_entry["models"][model_name] = {"error": result.get("error", "未知错误")}
+                error_msg = result.get("error", "未知错误")
+                sentence_entry["models"][model_name] = {"error": error_msg}
+                
+                # 将错误信息添加到模型特定结果中
+                model_sentence_entry = {
+                    "text": sentence,
+                    "error": error_msg
+                }
+                model_results[model_name]["sentences"].append(model_sentence_entry)
         
         # 添加句子条目到汇总结果
         combined_results["sentences"].append(sentence_entry)
@@ -179,6 +211,15 @@ def save_results(sentence_results, filename, output_dir, template_name=None):
         json.dump(combined_results, f, ensure_ascii=False, indent=2)
     
     logger.info(f"所有句子分析结果已保存到 {all_output_file}")
+    
+    # 为每个模型保存单独的结果文件
+    for model_name, result in model_results.items():
+        model_output_file = os.path.join(model_dirs[model_name], f"{filename}_sentences.json")
+        
+        with open(model_output_file, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"{model_name} 模型的句子分析结果已保存到 {model_output_file}")
 
 def main():
     # 解析命令行参数
