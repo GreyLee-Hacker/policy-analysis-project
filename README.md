@@ -17,6 +17,8 @@ policy-analysis-project/
 │   ├── manage_models.py   # 模型管理器
 │   ├── handle_model_errors.py     # 错误处理器
 │   ├── test_multiple_models.py    # 测试多个模型
+│   ├── start_local_model.py       # 启动本地模型
+│   ├── interact_with_local_model.py # 与本地模型交互
 │   └── ...
 ├── src/                   # 源代码
 │   ├── config/            # 配置文件
@@ -196,6 +198,187 @@ TAX_ANALYSIS_TEMPLATE = """请分析以下政策中的税收相关内容：
 
 # 更新模板字典
 TEMPLATES["tax"] = TAX_ANALYSIS_TEMPLATE
+```
+
+## 启动并使用本地大模型
+
+本项目现在提供了更完善的本地大语言模型支持，包括模型启动和交互脚本，让您可以轻松部署和使用自己的大模型进行政策分析。
+
+### 1. 启动本地模型服务
+
+我们提供了一个功能强大的启动脚本，支持多种开源大语言模型：
+
+```bash
+# 使用默认设置启动(Qwen2-7B-Instruct)
+python scripts/start_local_model.py
+
+# 指定模型路径(本地模型或Hugging Face模型)
+python scripts/start_local_model.py --model_path /path/to/your/model
+
+# 使用特定端口
+python scripts/start_local_model.py --port 8001
+
+# 在CPU上运行模型(适用于没有GPU的设备)
+python scripts/start_local_model.py --device cpu
+
+# 使用半精度加载模型(节省GPU内存)
+python scripts/start_local_model.py --use_half
+
+# 指定每个GPU的最大内存使用
+python scripts/start_local_model.py --max_memory "0:10GiB,1:10GiB"
+```
+
+服务启动后，将在指定地址(默认为`http://0.0.0.0:8001`)监听请求，提供两种API接口：
+- 标准接口：`/chat` - 接受conversation_id和prompt参数
+- 兼容接口：`/api/chat` - 兼容ChatGLM格式的接口，接受prompt和history参数
+
+### 2. 与本地模型交互
+
+启动模型服务后，您可以通过我们的交互式客户端与大模型进行对话：
+
+```bash
+# 启动交互式聊天界面
+python scripts/interact_with_local_model.py
+
+# 指定模型服务URL
+python scripts/interact_with_local_model.py --url http://localhost:8001/chat
+
+# 使用ChatGLM兼容接口
+python scripts/interact_with_local_model.py --chatglm
+
+# 分析特定政策文件
+python scripts/interact_with_local_model.py --file data/input/specific_file.txt
+
+# 直接分析政策文本
+python scripts/interact_with_local_model.py --policy "这是一段政策文本..."
+```
+
+交互式界面支持以下命令：
+- `quit`/`exit`/`q` - 退出聊天
+- `clear` - 清除聊天历史
+- `save` - 保存聊天历史到文件
+
+### 3. 在政策分析项目中使用本地模型
+
+本地模型服务启动后，您可以像使用云端模型一样将其集成到政策分析工作流中：
+
+```bash
+# 使用本地模型进行政策分析
+python scripts/run_analysis.py --models chatglm-local --input data/input/your_policy.txt
+```
+
+### 4. 配置本地模型
+
+您还可以使用模型管理工具配置本地模型：
+
+```bash
+# 启动模型管理工具
+python scripts/manage_models.py
+
+# 在菜单中选择选项7: 配置本地模型
+```
+
+这将引导您设置本地模型的URL、将其添加到可用模型列表，并选择性地将其设为默认模型。
+
+### 5. 系统要求
+
+- **Python 3.8+**
+- **PyTorch 1.10+**
+- **Transformers 4.28+**
+- **20GB+ 内存**（取决于所使用的模型大小）
+- **NVIDIA GPU**（建议用于大型模型，8GB+显存）
+  - 也支持在CPU上运行，但会很慢
+  - 支持Apple M系列芯片上的MPS加速
+
+### 6. 故障排除
+
+- **内存/显存不足**: 尝试使用`--use_half`参数降低精度，或选择更小的模型
+- **模型加载错误**: 确保模型路径正确，并已完整下载所有模型文件
+- **API连接失败**: 检查URL和端口配置是否正确，确保模型服务正在运行
+- **响应速度慢**: 这是正常现象，本地模型在首次调用时需要加载和编译，后续响应会更快
+
+## 配置本地大模型
+
+项目支持使用本地部署的大语言模型，以下是详细配置步骤：
+
+### 1. 本地模型准备
+
+首先，您需要在本地部署一个大语言模型服务。推荐以下方案：
+
+- **ChatGLM系列模型**：可通过[ChatGLM官方仓库](https://github.com/THUDM/ChatGLM3)获取安装指南
+- **自行部署的API服务**：任何符合标准API格式的本地模型服务都可以集成
+
+### 2. 使用模型管理工具进行配置
+
+项目提供了专门的交互式配置向导，简化本地模型的接入流程：
+
+```bash
+# 启动模型管理工具
+python scripts/manage_models.py
+
+# 在菜单中选择选项7：配置本地模型
+```
+
+配置向导会引导您完成以下操作：
+- 设置本地模型服务的URL地址（默认为`http://0.0.0.0:8002/chat`）
+- 将URL保存到环境变量和配置文件中
+- 添加本地模型到可用模型列表
+- 设置本地模型为默认使用模型（可选）
+- 测试模型连接状态
+
+![本地模型配置向导示意图](docs/images/local_model_setup.png)
+
+### 3. 本地模型API格式要求
+
+项目默认支持ChatGLM系列模型的API格式：
+
+- **请求格式**：
+  ```json
+  {
+    "prompt": "你好",
+    "history": []
+  }
+  ```
+
+- **响应格式**：
+  ```json
+  {
+    "response": "模型的回复内容"
+  }
+  ```
+
+如果您的本地模型使用不同的API格式，有两种解决方案：
+
+1. **修改您的模型服务器**：使其提供与上述格式兼容的API
+2. **调整项目代码**：在`src/services/llm_service.py`文件中修改对应的处理逻辑
+
+### 4. 常见问题解决
+
+- **连接失败**：确保本地模型服务已启动并监听在配置的URL上
+- **响应格式错误**：检查模型API的返回格式是否符合要求
+- **响应超时**：适当增加超时时间，因为本地大模型处理可能较慢
+- **无法识别模型**：确认模型名称已正确添加到配置中
+
+### 5. 启动和使用本地模型的脚本示例
+
+以下是启动ChatGLM服务的参考命令（具体命令可能因您的环境而有所不同）：
+
+```bash
+# 使用conda环境
+conda activate chatglm
+
+# 启动ChatGLM API服务
+python -m app.py --server 0.0.0.0 --port 8002
+```
+
+在服务启动后，您可以使用以下命令来测试与分析：
+
+```bash
+# 测试本地模型
+python scripts/test_multiple_models.py --models chatglm-local
+
+# 使用本地模型进行政策分析
+python scripts/run_analysis.py --models chatglm-local --input data/input/your_policy.txt
 ```
 
 ## 支持的模型

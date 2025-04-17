@@ -361,7 +361,7 @@ def remove_model_references(model_name):
     try:
         # 1. 更新 llm_service.py 文件，删除模型映射及相关行
         llm_service_path = os.path.join(project_root, "src", "services", "llm_service.py")
-        if os.path.exists(llm_service_path):
+        if (os.path.exists(llm_service_path)):
             with open(llm_service_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             
@@ -588,6 +588,126 @@ def test_api_connection():
     else:
         print_colored("✗ 未配置百度API密钥", Fore.RED)
 
+def configure_local_model():
+    """配置本地模型的参数"""
+    config_data = load_model_config()
+    
+    print_colored("\n=== 本地模型配置 ===", Fore.CYAN, Style.BRIGHT)
+    print_colored("这个向导将帮助您配置本地运行的大语言模型", Fore.WHITE)
+    
+    # 检查当前本地模型配置
+    current_endpoint = config_data.get("MODEL_ENDPOINTS", {}).get("model_chatglm", "")
+    print_colored(f"\n当前本地模型URL: {current_endpoint}", Fore.YELLOW)
+    
+    # 询问用户是否要更改URL
+    if input("\n是否要更改本地模型URL? (y/n): ").lower() == 'y':
+        new_endpoint = input(f"请输入新的URL [默认: http://0.0.0.0:8002/chat]: ").strip()
+        if not new_endpoint:
+            new_endpoint = "http://0.0.0.0:8002/chat"
+        
+        # 更新环境变量
+        os.environ["CHATGLM_URL"] = new_endpoint
+        
+        # 询问是否要将环境变量写入.env文件
+        if input("是否将URL保存到.env文件中? (y/n): ").lower() == 'y':
+            env_path = os.path.join(project_root, '.env')
+            
+            # 读取现有.env文件内容或创建新的
+            env_content = ""
+            if os.path.exists(env_path):
+                with open(env_path, 'r', encoding='utf-8') as f:
+                    env_content = f.read()
+            
+            # 检查是否已有CHATGLM_URL配置
+            if "CHATGLM_URL=" in env_content:
+                env_content = re.sub(r'CHATGLM_URL=.*', f'CHATGLM_URL={new_endpoint}', env_content)
+            else:
+                env_content += f"\nCHATGLM_URL={new_endpoint}"
+            
+            # 写入.env文件
+            with open(env_path, 'w', encoding='utf-8') as f:
+                f.write(env_content)
+            
+            print_colored(f"✓ 已将本地模型URL保存到.env文件", Fore.GREEN)
+        
+        # 更新当前配置
+        try:
+            # 读取配置文件
+            config_path = os.path.join(project_root, "src", "config", "model_config.py")
+            with open(config_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # 替换MODEL_ENDPOINTS中的model_chatglm
+            pattern = r'(model_chatglm": os\.getenv\("CHATGLM_URL", )"([^"]*)"'
+            content = re.sub(pattern, f'\\1"{new_endpoint}"', content)
+            
+            # 写入更新后的配置
+            with open(config_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            print_colored(f"✓ 已更新本地模型URL为: {new_endpoint}", Fore.GREEN)
+            current_endpoint = new_endpoint
+        except Exception as e:
+            logger.error(f"更新本地模型URL失败: {str(e)}")
+            print_colored(f"✗ 更新本地模型URL失败: {str(e)}", Fore.RED)
+    
+    # 检查并添加本地模型到可用模型列表
+    local_models = config_data["AVAILABLE_MODELS"].get("local", [])
+    model_name = "chatglm-local"
+    
+    if model_name not in local_models:
+        if input(f"是否要添加{model_name}到本地模型列表? (y/n): ").lower() == 'y':
+            if "local" not in config_data["AVAILABLE_MODELS"]:
+                config_data["AVAILABLE_MODELS"]["local"] = []
+            
+            config_data["AVAILABLE_MODELS"]["local"].append(model_name)
+            update_model_config(config_data)
+            print_colored(f"✓ 已添加{model_name}到本地模型列表", Fore.GREEN)
+    
+    # 询问是否设置为默认模型
+    if model_name not in config_data["DEFAULT_MODELS"]:
+        if input(f"是否要将{model_name}设置为默认模型之一? (y/n): ").lower() == 'y':
+            config_data["DEFAULT_MODELS"].append(model_name)
+            update_model_config(config_data)
+            print_colored(f"✓ 已将{model_name}添加到默认模型列表中", Fore.GREEN)
+    
+    # 测试本地模型连接
+    if input("\n是否要测试本地模型连接? (y/n): ").lower() == 'y':
+        try:
+            print_colored(f"\n正在测试本地模型连接...", Fore.YELLOW)
+            response = requests.post(
+                current_endpoint, 
+                json={"prompt": "hello", "history": []}, 
+                timeout=10  # 增加超时时间，本地模型可能加载较慢
+            )
+            
+            if response.status_code == 200:
+                print_colored(f"✓ 本地模型连接测试成功!", Fore.GREEN)
+                try:
+                    reply = response.json().get('response', '未获取到回复内容')
+                    print_colored("模型回复:", Fore.CYAN)
+                    print_colored(f"  {reply[:150]}{'...' if len(reply) > 150 else ''}", Fore.WHITE)
+                except:
+                    print_colored("模型返回了非JSON格式的响应", Fore.YELLOW)
+            else:
+                print_colored(f"✗ 本地模型连接测试失败，HTTP状态码: {response.status_code}", Fore.RED)
+                print_colored(f"返回内容: {response.text[:150]}", Fore.WHITE)
+        except requests.exceptions.ConnectionError:
+            print_colored(f"✗ 无法连接到本地模型，请检查模型是否已启动", Fore.RED)
+            print_colored("建议: 请确保本地模型服务器已启动并监听在正确的端口上", Fore.YELLOW)
+        except Exception as e:
+            print_colored(f"✗ 测试本地模型时出错: {str(e)}", Fore.RED)
+    
+    # 提供本地模型启动指南
+    print_colored("\n=== 本地模型启动指南 ===", Fore.CYAN, Style.BRIGHT)
+    print_colored("如果您还未启动本地模型，请参考以下步骤:", Fore.WHITE)
+    print_colored("1. 确保您已安装所需的本地模型(如ChatGLM等)", Fore.WHITE)
+    print_colored("2. 启动本地模型服务，确保它监听在配置的URL上", Fore.WHITE)
+    print_colored("3. 本项目默认支持ChatGLM系列模型的API格式", Fore.WHITE)
+    print_colored("4. 如需使用其他格式的本地模型，可能需要编写适配代码", Fore.WHITE)
+    
+    print_colored("\n配置完成后，您可以使用test_model功能测试模型是否工作正常", Fore.YELLOW)
+
 def main_menu():
     """主菜单"""
     while True:
@@ -598,9 +718,10 @@ def main_menu():
         print_colored("4. 设置/取消默认模型", Fore.WHITE)
         print_colored("5. 测试模型连接", Fore.WHITE)
         print_colored("6. 测试API连接", Fore.WHITE)
+        print_colored("7. 配置本地模型", Fore.WHITE)
         print_colored("0. 退出", Fore.WHITE)
         
-        choice = input("\n请选择操作 [0-6]: ").strip()
+        choice = input("\n请选择操作 [0-7]: ").strip()
         
         if choice == '0':
             break
@@ -622,6 +743,8 @@ def main_menu():
                 print_colored("已取消测试模型操作", Fore.YELLOW)
         elif choice == '6':
             test_api_connection()
+        elif choice == '7':
+            configure_local_model()
         else:
             print_colored("无效的选择，请重新输入", Fore.RED)
 
