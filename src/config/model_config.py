@@ -61,8 +61,6 @@ DEFAULT_MODELS = [
     "qwen-72b-chat",
     "qwen2-7b-instruct",
     "qwen2-72b-instruct",
-    "deepseek-r1",
-    "qwen-long",
     "deepseek-v3",
     "ernie-bot" if API_KEYS["baidu_api_key"] and API_KEYS["baidu_secret_key"] else None,
     "gpt-3.5-turbo" if API_KEYS["openai"] else None,

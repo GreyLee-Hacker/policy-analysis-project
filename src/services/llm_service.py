@@ -5,17 +5,7 @@ import requests
 import time
 import logging
 from openai import OpenAI
-
-def setup_logger(name):
-    """创建并配置一个日志记录器"""
-    logger = logging.getLogger(f"llm_service.{name}")
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-    return logger
+from src.utils.logging_utils import setup_logger  # 导入统一的日志设置函数
 
 class LLMService:
     def __init__(self, model_endpoints=None):
@@ -493,4 +483,4 @@ def save_results_to_json(results, output_dir, filename_prefix="model_comparison"
     return output_file
 
 # 导出的函数和类
-__all__ = ['LLMService', 'call_models', 'save_results_to_json', 'setup_logger']
+__all__ = ['LLMService', 'call_models', 'save_results_to_json']

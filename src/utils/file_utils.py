@@ -2,6 +2,7 @@ import os
 import json
 import logging
 from pathlib import Path
+from src.utils.logging_utils import setup_logger
 
 def write_results_to_json(results, output_path, ensure_dir=True):
     """
@@ -90,22 +91,5 @@ def setup_model_logger(model_name, log_dir="logs"):
     Returns:
         配置好的日志记录器
     """
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-        
-    logger = logging.getLogger(f"model.{model_name}")
-    
-    if not logger.handlers:  # 避免重复添加处理器
-        # 设置文件处理器
-        log_file = os.path.join(log_dir, f"{model_name}.log")
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        
-        # 设置格式
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        
-        # 添加到记录器
-        logger.addHandler(file_handler)
-        logger.setLevel(logging.INFO)
-        
-    return logger
+    # 直接使用统一的日志设置函数
+    return setup_logger(f"model.{model_name}", log_dir)

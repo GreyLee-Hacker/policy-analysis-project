@@ -13,7 +13,8 @@ import re
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.utils.response_parser import parse_housing_elements
-from src.utils.file_utils import write_model_results_to_json, setup_model_logger
+from src.utils.file_utils import write_model_results_to_json
+from src.utils.logging_utils import setup_logger  # 使用统一的日志设置函数
 from src.services.llm_service import LLMService, call_models
 from src.config.model_config import MODEL_ENDPOINTS, DEFAULT_MODELS
 from src.config.prompt_templates import TEMPLATES, DEFAULT_TEMPLATE
@@ -22,7 +23,7 @@ from src.config.prompt_templates import TEMPLATES, DEFAULT_TEMPLATE
 logs_dir = os.path.join(os.path.dirname(__file__), '..', 'logs')
 os.makedirs(logs_dir, exist_ok=True)
 
-# 设置主日志记录器
+# 设置主日志记录器 - 作为根记录器
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -32,7 +33,9 @@ logging.basicConfig(
     ]
 )
 
-logger = logging.getLogger('main')
+# 获取主日志记录器
+logger = logging.getLogger(__name__)
+logger.info("开始政策分析任务")
 
 # 使用定义的模型端点实例化LLMService
 llm_service = LLMService(MODEL_ENDPOINTS)
