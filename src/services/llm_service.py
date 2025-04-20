@@ -319,7 +319,7 @@ class LLMService:
                 response.raise_for_status()
                 
                 elapsed_time = time.time() - start_time
-                logger.info(f"百度文心API响应时间: {elapsed时间:.2f}秒")
+                logger.info(f"百度文心API响应时间: {elapsed_time:.2f}秒")
                 
                 result = response.json()
                 return result.get("result", "")
