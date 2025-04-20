@@ -319,7 +319,7 @@ class LLMService:
                 response.raise_for_status()
                 
                 elapsed_time = time.time() - start_time
-                logger.info(f"百度文心API响应时间: {elapsed_time:.2f}秒")
+                logger.info(f"百度文心API响应时间: {elapsed时间:.2f}秒")
                 
                 result = response.json()
                 return result.get("result", "")
@@ -381,7 +381,14 @@ class LLMService:
                 logger = setup_logger(model_name)
                 logger.info(f"开始处理模型 {model_name} 的请求...")
                 
-                result = self.call_model(model_name, prompt)
+                if ModelSemaphores.acquire(model_name, timeout=300):  # 获取信号量，超时设置为5分钟
+                    try:
+                        result = self.call_model(model_name, prompt)
+                    finally:
+                        ModelSemaphores.release(model_name)  # 确保释放信号量
+                else:
+                    result = None  # 如果获取信号量失败，返回None
+
                 elapsed_time = time.time() - start_time
 
                 if result is None:
@@ -481,6 +488,27 @@ def save_results_to_json(results, output_dir, filename_prefix="model_comparison"
     
     print(f"结果已保存到: {output_file}")
     return output_file
+
+# 添加信号量控制机制
+class ModelSemaphores:
+    """用于控制不同模型的并发请求数的信号量集合"""
+    _semaphores = {
+        # 特定模型的信号量限制，值为允许的最大并发请求数
+        "qwen-72b-chat": threading.Semaphore(3)  # qwen-72b-chat模型限制为最多3个并发请求
+    }
+    
+    @classmethod
+    def acquire(cls, model_name, timeout=None):
+        """获取指定模型的信号量"""
+        if model_name in cls._semaphores:
+            return cls._semaphores[model_name].acquire(timeout=timeout)
+        return True  # 如果模型没有特殊限制，直接返回True
+    
+    @classmethod
+    def release(cls, model_name):
+        """释放指定模型的信号量"""
+        if model_name in cls._semaphores:
+            cls._semaphores[model_name].release()
 
 # 导出的函数和类
 __all__ = ['LLMService', 'call_models', 'save_results_to_json']

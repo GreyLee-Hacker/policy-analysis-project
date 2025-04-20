@@ -55,13 +55,8 @@ AVAILABLE_MODELS = {
 
 # 按优先级排列的默认模型
 DEFAULT_MODELS = [
-    "qwen-turbo",
-    "qwen-plus",
-    "qwen-max",
     "qwen-72b-chat",
-    "qwen2-7b-instruct",
     "qwen2-72b-instruct",
-    "deepseek-v3",
     "ernie-bot" if API_KEYS["baidu_api_key"] and API_KEYS["baidu_secret_key"] else None,
     "gpt-3.5-turbo" if API_KEYS["openai"] else None,
     "chatglm-local" if os.path.exists(MODEL_ENDPOINTS["model_chatglm"]) else None
