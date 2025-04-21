@@ -175,7 +175,7 @@ def process_batch(batch_sentences, template, models, lock, progress_data, progre
         logger.error(traceback.format_exc())
         return []
 
-def process_file_with_threads(file_path, models, output_dir, template_name, max_workers=5, batch_size=3):
+def process_file_with_threads(file_path, models, output_dir, template_name, max_workers=2, batch_size=3, resume=False, start_from=None, resume_file=None, resume_doc_id=None):
     """使用多线程处理单个文件，大幅提高处理速度"""
     try:
         # 读取政策文本
@@ -244,65 +244,170 @@ def process_file_with_threads(file_path, models, output_dir, template_name, max_
         
         # 获取文件名（不含扩展名）
         filename = os.path.splitext(os.path.basename(file_path))[0]
+        file_basename = os.path.basename(file_path) # <-- 获取完整文件名用于比较
         
         # 创建进度记录文件
         progress_dir = os.path.join(output_dir, template_name, "progress")
         os.makedirs(progress_dir, exist_ok=True)
         progress_file = os.path.join(progress_dir, f"{filename}_progress.json")
         
-        # 初始化进度记录
-        progress_data = {
-            "filename": filename,
-            "total_sentences": len(sentences),
-            "processed_sentences": 0,
-            "last_update": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "status": "processing",
-            "thread_count": max_workers,
-            "batch_size": batch_size
-        }
+        # 检查是否已有进度文件和断点续处理参数
+        start_position = 0
+        existing_processed = []
         
-        # 保存初始进度
-        with open(progress_file, 'w', encoding='utf-8') as f:
-            json.dump(progress_data, f, ensure_ascii=False, indent=2)
+        # 优先处理特定文件和 doc_id 的续跑逻辑
+        if resume_file and resume_doc_id is not None and file_basename == resume_file:
+            logger.info(f"检测到特定文件续跑请求: 文件='{resume_file}', doc_id='{resume_doc_id}'")
+            found_start_index = -1
+            for i, sentence_data in enumerate(sentences):
+                # 确保比较的是字符串类型
+                if str(sentence_data.get('doc_id')) == str(resume_doc_id):
+                    found_start_index = i
+                    break
+            if found_start_index != -1:
+                start_position = found_start_index
+                logger.info(f"在文件 '{resume_file}' 中找到 doc_id '{resume_doc_id}' 对应的句子索引: {start_position}，将从该位置开始处理。")
+                # 特定文件续跑时，也尝试加载增量文件以避免重复写入
+                incremental_file_path_for_resume = os.path.join(output_dir, template_name, "incremental", f"{filename}_incremental.json")
+                if os.path.exists(incremental_file_path_for_resume):
+                     try:
+                         with open(incremental_file_path_for_resume, 'r', encoding='utf-8') as f:
+                             existing_processed = json.load(f)
+                             if not isinstance(existing_processed, list): existing_processed = []
+                             logger.info(f"从增量文件 '{incremental_file_path_for_resume}' 加载了 {len(existing_processed)} 条已处理结果。")
+                     except (json.JSONDecodeError, FileNotFoundError) as e:
+                         logger.warning(f"读取增量文件 '{incremental_file_path_for_resume}' 失败: {str(e)}，将创建新的增量文件")
+                         existing_processed = []
+            else:
+                logger.warning(f"在文件 '{resume_file}' 中未找到指定的 doc_id '{resume_doc_id}'，将从头处理该文件。")
+                start_position = 0 # 未找到则从头开始
+        elif resume_file and file_basename != resume_file:
+             logger.info(f"当前文件 '{file_basename}' 不是指定的续跑文件 '{resume_file}'，将从头处理。")
+             start_position = 0 # 其他文件从头开始
+             existing_processed = [] # 其他文件不加载历史结果
+        elif resume and os.path.exists(progress_file): # 处理通用的 resume 逻辑 (如果没有指定特定文件)
+            try:
+                with open(progress_file, 'r', encoding='utf-8') as f:
+                    existing_progress = json.load(f)
+                    # 只有在没有指定特定文件续跑时，才使用进度文件中的位置
+                    if not (resume_file and file_basename == resume_file):
+                        start_position = existing_progress.get("processed_sentences", 0)
+                        logger.info(f"发现进度文件，从第 {start_position} 个句子继续处理")
+            except (json.JSONDecodeError, FileNotFoundError) as e:
+                logger.warning(f"读取进度文件失败: {str(e)}，将从头开始处理")
+                start_position = 0
+        elif start_from is not None and start_from >= 0: # 处理 start_from 参数 (优先级低于特定文件续跑)
+             if not (resume_file and file_basename == resume_file):
+                 start_position = start_from
+                 logger.info(f"根据参数指定，从第 {start_position} 个句子开始处理")
         
-        # 创建结果输出目录
+        
+        # 创建增量结果目录
         result_dir = os.path.join(output_dir, template_name, "incremental")
         os.makedirs(result_dir, exist_ok=True)
         
         # 为当前文件创建专门的增量结果文件
         incremental_file = os.path.join(result_dir, f"{filename}_incremental.json")
         
-        # 如果文件不存在，创建一个空的结果列表文件
-        if not os.path.exists(incremental_file):
-            with open(incremental_file, 'w', encoding='utf-8') as f:
-                json.dump([], f, ensure_ascii=False)
+        # 检查是否存在已处理的结果，避免重复处理 (仅在续跑时加载)
+        # 注意：上面特定文件续跑逻辑已经处理了 existing_processed 的加载
+        if start_position > 0 and not (resume_file and file_basename == resume_file): # 只有在通用续跑时才加载
+            if os.path.exists(incremental_file):
+                try:
+                    with open(incremental_file, 'r', encoding='utf-8') as f:
+                        loaded_data = json.load(f)
+                        if isinstance(loaded_data, list):
+                             existing_processed = loaded_data
+                             logger.info(f"读取到 {len(existing_processed)} 个已处理结果")
+                        else:
+                             logger.warning(f"增量文件 '{incremental_file}' 内容格式不正确，将忽略。")
+                             existing_processed = []
+                except (json.JSONDecodeError, FileNotFoundError) as e:
+                    logger.warning(f"读取增量文件失败: {str(e)}，将创建新的增量文件")
+                    existing_processed = []
+            else:
+                 existing_processed = [] # 文件不存在则为空
+        
+        # 如果增量文件不存在或不续跑，创建一个空的结果列表文件
+        if not os.path.exists(incremental_file) or start_position == 0:
+             # 如果是特定文件续跑，即使 start_position > 0，也可能需要清空旧的增量文件
+             # 但上面的逻辑已经加载了 existing_processed，所以这里只在文件不存在时创建
+             if not os.path.exists(incremental_file):
+                 with open(incremental_file, 'w', encoding='utf-8') as f:
+                     json.dump([], f, ensure_ascii=False)
+                 existing_processed = []
+             # 如果 start_position 为 0 (从头开始)，确保 existing_processed 为空
+             if start_position == 0:
+                 existing_processed = []
+                 # 如果文件存在但要从头跑，清空它
+                 if os.path.exists(incremental_file):
+                      logger.info(f"从头处理文件 '{file_basename}'，清空现有增量文件 '{incremental_file}'。")
+                      with open(incremental_file, 'w', encoding='utf-8') as f:
+                          json.dump([], f, ensure_ascii=False)
+        
+        
+        # 初始化进度记录
+        # 注意：这里的 processed_sentences 应该反映实际从增量文件加载的数量
+        # 但为了简化，我们让 process_batch 去累加，这里只记录总数和初始状态
+        progress_data = {
+            "filename": filename,
+            "total_sentences": len(sentences),
+            "processed_sentences": start_position, # 记录开始处理的位置
+            "last_update": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "processing",
+            "thread_count": max_workers,
+            "batch_size": batch_size,
+            "completion_percentage": round(start_position / len(sentences) * 100, 2) if sentences else 0
+        }
+        
+        # 保存初始进度
+        with open(progress_file, 'w', encoding='utf-8') as f:
+            json.dump(progress_data, f, ensure_ascii=False, indent=2)
         
         # 创建线程锁，用于同步文件访问
         file_lock = threading.Lock()
-        current_processed = [0]  # 使用列表作为可变对象，用于跨线程更新
+        # current_processed 应该从 start_position 开始计数
+        current_processed = [start_position] # 使用列表作为可变对象，用于跨线程更新
         
-        # 将句子列表分成多个批次
+        # 根据断点位置处理句子
+        sentences_to_process = []
+        if start_position >= len(sentences):
+            logger.warning(f"指定的起始位置 {start_position} 大于或等于句子总数 {len(sentences)}，无需处理文件 '{file_basename}'")
+            # 更新进度为完成
+            progress_data["status"] = "completed"
+            progress_data["processed_sentences"] = len(sentences) # 标记为全部处理完
+            progress_data["completion_percentage"] = 100
+            progress_data["completion_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(progress_file, 'w', encoding='utf-8') as f:
+                 json.dump(progress_data, f, ensure_ascii=False, indent=2)
+            return True # 直接返回成功
+        else:
+            sentences_to_process = sentences[start_position:]
+            logger.info(f"准备处理文件 '{file_basename}' 从第 {start_position} 个句子开始，共 {len(sentences_to_process)} 个句子需处理")
+        
+        
+        # 将待处理的句子列表分成多个批次
         batches = []
-        for i in range(0, len(sentences), batch_size):
-            batches.append(sentences[i:i+batch_size])
+        for i in range(0, len(sentences_to_process), batch_size):
+            batches.append(sentences_to_process[i:i+batch_size])
         
-        logger.info(f"将 {len(sentences)} 个句子分为 {len(batches)} 个批次进行处理，每批次 {batch_size} 个句子")
+        logger.info(f"将 {len(sentences_to_process)} 个待处理句子分为 {len(batches)} 个批次进行处理，每批次 {batch_size} 个句子")
         
         # 使用ThreadPoolExecutor并行处理所有批次
-        all_results = []
+        processed_count_in_run = 0 # 本次运行实际处理的数量
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 提交所有批次的处理任务
             future_to_batch = {
                 executor.submit(
-                    process_batch, 
-                    batch, 
-                    template, 
-                    models, 
+                    process_batch,
+                    batch,
+                    template,
+                    models,
                     file_lock,
-                    progress_data,
+                    progress_data, # 传递 progress_data 字典本身
                     progress_file,
                     incremental_file,
-                    current_processed
+                    current_processed # 传递包含当前计数的列表
                 ): i for i, batch in enumerate(batches)
             }
             
@@ -313,50 +418,68 @@ def process_file_with_threads(file_path, models, output_dir, template_name, max_
                 batch_index = future_to_batch[future]
                 try:
                     batch_results = future.result()
-                    all_results.extend(batch_results)
+                    # all_results.extend(batch_results) # 不再需要收集所有结果到内存
+                    processed_count_in_run += len(batch_results)
                     logger.info(f"批次 {batch_index} 处理完成，获取了 {len(batch_results)} 个结果")
                 except Exception as e:
                     logger.error(f"批次 {batch_index} 处理失败: {str(e)}")
         
-        logger.info(f"所有批次处理完成，共处理 {current_processed[0]}/{len(sentences)} 个句子")
+        logger.info(f"文件 '{file_basename}' 本次运行处理完成，共处理 {processed_count_in_run} 个句子")
         
         # 完成所有处理后，更新进度记录
+        final_processed_count = current_processed[0] # 获取最终处理到的句子总数
         progress_data["status"] = "completed"
-        progress_data["processed_sentences"] = len(sentences)
-        progress_data["completion_percentage"] = 100
+        progress_data["processed_sentences"] = final_processed_count
+        progress_data["completion_percentage"] = round(final_processed_count / len(sentences) * 100, 2) if sentences else 100
         progress_data["completion_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
         
         with open(progress_file, 'w', encoding='utf-8') as f:
             json.dump(progress_data, f, ensure_ascii=False, indent=2)
-            
-        logger.info(f"处理完成: {len(sentences)}/{len(sentences)} (100%)")
+        
+        logger.info(f"文件 '{file_basename}' 处理完成: {final_processed_count}/{len(sentences)} ({progress_data['completion_percentage']}%)")
         
         # 创建输出目录
         all_output_dir = os.path.join(output_dir, template_name, "all")
         os.makedirs(all_output_dir, exist_ok=True)
         
-        # 保存最终结果
+        # 保存最终结果 (从增量文件读取)
         final_output_file = os.path.join(all_output_dir, f"{filename}_sentences.json")
         
-        # 直接使用增量文件的结果作为最终结果
         try:
             with open(incremental_file, 'r', encoding='utf-8') as f:
                 final_results = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            # 如果增量文件有问题，使用all_results重新构建
-            logger.warning(f"无法读取增量结果文件，使用内存中结果构建最终输出")
-            final_results = all_results
+                if not isinstance(final_results, list):
+                     logger.error(f"最终增量文件 '{incremental_file}' 内容格式错误，无法生成汇总文件。")
+                     final_results = [] # 置为空列表避免写入错误
+        except (json.JSONDecodeError, FileNotFoundError) as e:
+            logger.error(f"无法读取最终增量结果文件 '{incremental_file}' ({e})，无法生成汇总文件。")
+            final_results = [] # 置为空列表避免写入错误
         
-        with open(final_output_file, 'w', encoding='utf-8') as f:
-            json.dump(final_results, f, ensure_ascii=False, indent=2)
+        # 只有在 final_results 不为空时才写入
+        if final_results:
+             with open(final_output_file, 'w', encoding='utf-8') as f:
+                 json.dump(final_results, f, ensure_ascii=False, indent=2)
+             logger.info(f"所有句子分析结果已保存到 {final_output_file}")
+        else:
+             logger.warning(f"由于增量文件为空或读取失败，未生成最终汇总文件 '{final_output_file}'")
         
-        logger.info(f"所有句子分析结果已保存到 {final_output_file}")
         
         return True
     except Exception as e:
         logger.error(f"处理文件 {file_path} 时出错: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
+        # 标记进度为失败
+        try:
+            progress_data["status"] = "failed"
+            progress_data["error_message"] = str(e)
+            progress_data["last_update"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            with open(progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress_data, f, ensure_ascii=False, indent=2)
+        except NameError: # 如果 progress_data 还未定义
+             logger.error("在记录失败状态之前发生错误")
+        except Exception as pe: # 记录进度文件写入错误
+             logger.error(f"写入失败状态到进度文件时出错: {pe}")
         return False
 
 def save_results(sentence_results, filename, output_dir, template_name=None):
@@ -561,84 +684,142 @@ def main():
     parser.add_argument('--models', '-m',
                        help='指定要使用的模型，用逗号分隔')
     # 添加多线程相关参数
-    parser.add_argument('--threads', '-j', type=int, default=5,
-                       help='指定工作线程数量 (默认: 5)')
+    parser.add_argument('--threads', '-j', type=int, default=2, # <-- 修改默认值为 2
+                       help='指定工作线程数量 (默认: 2)')
     parser.add_argument('--batch-size', '-b', type=int, default=3,
                        help='每个批次的句子数量 (默认: 3)')
+    # 添加断点续处理相关参数
+    parser.add_argument('--resume', '-r', action='store_true',
+                       help='启用断点续处理功能，从上次处理的位置继续 (通用，基于进度文件)')
+    parser.add_argument('--start-from', '-s', type=int,
+                       help='指定从哪个句子序号开始处理 (从0开始计数，通用，优先级低于特定文件续跑)')
+    parser.add_argument('--resume-file', type=str,
+                       help='指定要续跑的文件名 (例如: 地方法规2_cleaned1_extract.json)')
+    parser.add_argument('--resume-doc-id', type=str, # <-- doc_id 通常是字符串
+                       help='指定在 resume-file 中从哪个 doc_id 开始处理')
+
     args = parser.parse_args()
-    
+
+    # 验证 resume-file 和 resume-doc-id 是否成对出现
+    if (args.resume_file and not args.resume_doc_id) or (not args.resume_file and args.resume_doc_id):
+        parser.error("--resume-file 和 --resume-doc-id 必须同时提供。")
+        return # 或者 sys.exit(1)
+
     # 设置输入和输出目录
     input_directory = os.path.join(os.path.dirname(__file__), '..', 'data', 'input')
-    output_directory = os.path.join(os.path.dirname(__file__), '..', 'data', 'output')
-    
+    # 修正 output_directory 路径，确保它指向 data/output
+    output_directory = os.path.join(os.path.dirname(__file__), '..', 'data', 'output', args.template) # 直接指向模板子目录
+    # os.makedirs(output_directory, exist_ok=True) # 确保基础输出目录存在，process_file_with_threads 会创建子目录
+
     # 使用命令行指定的模板
     template_name = args.template
-    
+
     # 如果命令行指定了模型，则使用指定模型，否则使用默认模型
     global models
     if args.models:
         models = args.models.split(',')
         logger.info(f"使用命令行指定的模型: {models}")
-    
+
     # 获取线程数和批次大小
     max_workers = args.threads
     batch_size = args.batch_size
     logger.info(f"使用 {max_workers} 个工作线程，每批处理 {batch_size} 个句子")
-    
-    # 确保输入目录存在
-    if not os.path.exists(input_directory):
-        os.makedirs(input_directory)
-        logger.warning(f"创建了输入目录: {input_directory}")
+
+    # 获取断点续处理参数
+    resume = args.resume
+    start_from = args.start_from
+    resume_file = args.resume_file
+    resume_doc_id = args.resume_doc_id
+
+    if resume_file and resume_doc_id:
+         logger.info(f"启用特定文件续跑: 文件='{resume_file}', doc_id='{resume_doc_id}'")
+         # 当指定特定文件续跑时，禁用通用的 resume 和 start_from，避免冲突
+         resume = False
+         start_from = None
+         logger.info("通用 resume 和 start-from 参数已被忽略。")
+    elif resume:
+        logger.info("启用通用断点续处理功能，将从上次处理的位置继续")
+    elif start_from is not None:
+        logger.info(f"将从第 {start_from} 个句子开始处理 (通用)")
+
+
+    # 确保输入目录存在 (检查原始 input 目录)
+    base_input_directory = os.path.join(os.path.dirname(__file__), '..', 'data', 'input')
+    if not os.path.exists(base_input_directory):
+        os.makedirs(base_input_directory)
+        logger.warning(f"创建了输入目录: {base_input_directory}")
         logger.warning("请在输入目录中添加文本文件后重新运行")
         return
-    
-    # 获取输入文件列表
-    if args.input:
-        # 如果提供了input参数，直接使用该路径
-        if '*' in args.input:
-            input_files = glob.glob(args.input)
-            # 处理每个匹配的文件
-            for file_path in input_files:
-                if os.path.isfile(file_path):
-                    logger.info(f"处理文件: {file_path}")
-                    process_file_with_threads(file_path, models, output_directory, template_name, max_workers, batch_size)
-        else:
-            # 如果是单个文件或目录
-            if os.path.isfile(args.input):
-                process_file_with_threads(args.input, models, output_directory, template_name, max_workers, batch_size)
-            elif os.path.isdir(args.input):
-                # 如果是目录，处理目录中的所有文件
-                for f in os.listdir(args.input):
-                    file_path = os.path.join(args.input, f)
-                    if os.path.isfile(file_path) and f.endswith((".txt", ".json", ".md")):
-                        logger.info(f"处理文件: {file_path}")
-                        process_file_with_threads(file_path, models, output_directory, template_name, max_workers, batch_size)
-        logger.info("所有文件处理完成!")
-        return
-    else:
-        # 使用默认输入目录
-        input_files = [f for f in os.listdir(input_directory) 
-                      if f.endswith((".txt", ".json", ".md"))]
-    
-    if not input_files:
-        logger.warning(f"没有找到输入文件。请在 {input_directory} 目录中添加文件后重新运行。")
-        return
-    
-    logger.info(f"找到 {len(input_files)} 个输入文件")
-    
-    processed_files_count = 0 # 计数器
-    total_files = len(input_files) # 总文件数
 
-    with ThreadPoolExecutor(max_workers=args.threads) as executor:
-        # 依次处理每个输入文件，使用process_file_with_threads函数
-        future_to_file = {executor.submit(process_file_with_threads, os.path.join(input_directory, input_file), models, output_directory, template_name, max_workers, batch_size): input_file for input_file in input_files}
-        for future in as_completed(future_to_file):
-            input_file = future_to_file[future]
-            try:
-                if future.exception() is None:
-                    processed_files_count += 1 # 成功处理则计数
-            except Exception as exc:
-                logger.error(f'处理文件 {input_file} 时产生异常: {exc}')
+    # 获取输入文件列表
+    input_files_to_process = []
+    if args.input:
+        # 如果提供了input参数
+        input_path = args.input
+        # 检查是否是绝对路径，如果不是，则相对于项目根目录
+        if not os.path.isabs(input_path):
+             project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+             input_path = os.path.join(project_root, input_path)
+
+        if '*' in input_path or '?' in input_path: # 检查是否包含通配符
+            input_files_to_process = glob.glob(input_path)
+        elif os.path.isfile(input_path):
+            input_files_to_process = [input_path]
+        elif os.path.isdir(input_path):
+             # 处理目录中的所有 JSON 文件 (根据你的文件结构)
+             input_files_to_process = glob.glob(os.path.join(input_path, '*.json'))
+        else:
+             logger.error(f"指定的输入路径无效: {args.input}")
+             return
+    else:
+        # 使用默认输入目录 (data/input/policy/2024) - 根据你的结构调整
+        default_input_path = os.path.join(base_input_directory, 'policy', '2024')
+        if os.path.isdir(default_input_path):
+             input_files_to_process = glob.glob(os.path.join(default_input_path, '*.json'))
+        else:
+             logger.warning(f"默认输入路径 {default_input_path} 不存在或不是目录。")
+
+
+    if not input_files_to_process:
+        logger.warning(f"没有找到有效的输入文件。请检查输入路径或 {base_input_directory} 目录。")
+        return
+
+    logger.info(f"找到 {len(input_files_to_process)} 个输入文件准备处理: {', '.join([os.path.basename(f) for f in input_files_to_process])}")
+
+    processed_files_count = 0 # 计数器
+    total_files = len(input_files_to_process) # 总文件数
+
+    # 顺序处理文件，不再使用线程池处理文件本身
+    # 线程池用于处理单个文件内的句子批次
+    for file_path in input_files_to_process:
+         logger.info(f"开始处理文件: {file_path}")
+         # 确定当前文件是否是指定的续跑文件
+         current_file_basename = os.path.basename(file_path)
+         is_target_resume_file = resume_file == current_file_basename
+
+         # 准备传递给 process_file_with_threads 的参数
+         process_args = {
+             "file_path": file_path,
+             "models": models,
+             "output_dir": os.path.join(os.path.dirname(__file__), '..', 'data', 'output'), # 传递基础输出目录
+             "template_name": template_name,
+             "max_workers": max_workers,
+             "batch_size": batch_size,
+             "resume": resume, # 通用 resume 标志
+             "start_from": start_from, # 通用 start_from
+             "resume_file": resume_file, # 特定续跑文件名
+             "resume_doc_id": resume_doc_id # 特定续跑 doc_id
+         }
+
+         success = process_file_with_threads(**process_args)
+
+         if success:
+             processed_files_count += 1
+             logger.info(f"文件处理成功: {file_path}")
+         else:
+             logger.error(f"文件处理失败: {file_path}")
+         logger.info(f"已处理 {processed_files_count}/{total_files} 个文件")
+
 
     logger.info("所有文件处理完成。")
 
