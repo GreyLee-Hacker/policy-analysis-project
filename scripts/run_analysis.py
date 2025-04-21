@@ -9,9 +9,15 @@ import json
 import argparse
 import glob
 import re
+from dotenv import load_dotenv # <--- 添加导入
+import smtplib
+from email.mime.text import MIMEText
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# 加载 .env 文件中的环境变量 <--- 添加这行
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 from src.utils.response_parser import parse_housing_elements
 from src.utils.file_utils import write_model_results_to_json
@@ -461,7 +467,87 @@ def save_results(sentence_results, filename, output_dir, template_name=None):
         
         logger.info(f"{model_name} 模型的句子分析结果已保存到 {model_output_file}")
 
+def send_completion_email(processed_files_count, total_files, start_time):
+    """发送分析完成的邮件通知"""
+    smtp_server = os.getenv("SMTP_SERVER")
+    smtp_port = os.getenv("SMTP_PORT")
+    smtp_username = os.getenv("SMTP_USERNAME")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    recipient_email = os.getenv("EMAIL_RECIPIENT")
+
+    if not all([smtp_server, smtp_port, smtp_username, smtp_password, recipient_email]):
+        logger.warning("邮件配置不完整，跳过发送完成通知邮件。请检查 .env 文件中的 SMTP_* 和 EMAIL_RECIPIENT 配置。")
+        return
+
+    try:
+        smtp_port = int(smtp_port) # 端口号需要是整数
+        end_time = time.time()
+        duration = round(end_time - start_time, 2)
+
+        subject = "政策分析任务完成通知"
+        body = f"""
+        政策分析任务已完成。
+
+        开始时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_time))}
+        结束时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}
+        总耗时: {duration} 秒
+
+        共处理文件数: {processed_files_count} / {total_files}
+
+        请检查 'data/output/' 目录获取结果。
+        """
+
+        msg = MIMEText(body, 'plain', 'utf-8')
+        msg['Subject'] = subject
+        msg['From'] = smtp_username
+        msg['To'] = recipient_email
+
+        logger.info(f"准备发送邮件通知至 {recipient_email}...")
+
+        # 根据端口号选择连接方式
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30) as server:
+                server.login(smtp_username, smtp_password)
+                server.sendmail(smtp_username, [recipient_email], msg.as_string())
+        elif smtp_port == 587:
+             with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
+                server.starttls() # 启用TLS
+                server.login(smtp_username, smtp_password)
+                server.sendmail(smtp_username, [recipient_email], msg.as_string())
+        else: # 其他端口尝试普通SMTP连接
+             with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
+                # 如果需要，尝试 server.starttls()
+                try: # 尝试登录，如果需要的话
+                    server.login(smtp_username, smtp_password)
+                except smtplib.SMTPNotSupportedError:
+                    logger.info("SMTP 服务器不支持登录，尝试匿名发送...")
+                except smtplib.SMTPAuthenticationError:
+                     logger.error("SMTP 登录失败，请检查用户名和密码。")
+                     return # 登录失败则不发送
+                except Exception as login_err:
+                     logger.error(f"SMTP 登录时发生未知错误: {login_err}")
+                     return
+                server.sendmail(smtp_username, [recipient_email], msg.as_string())
+
+
+        logger.info("邮件通知发送成功！")
+
+    except smtplib.SMTPAuthenticationError:
+        logger.error(f"邮件发送失败：SMTP认证错误，请检查邮箱地址 ({smtp_username}) 和密码/授权码。")
+    except smtplib.SMTPServerDisconnected:
+         logger.error("邮件发送失败：SMTP服务器意外断开连接。")
+    except smtplib.SMTPConnectError:
+         logger.error(f"邮件发送失败：无法连接到SMTP服务器 {smtp_server}:{smtp_port}。请检查服务器地址和端口。")
+    except socket.gaierror:
+         logger.error(f"邮件发送失败：无法解析SMTP服务器地址 {smtp_server}。")
+    except socket.timeout:
+         logger.error("邮件发送失败：连接SMTP服务器超时。")
+    except Exception as e:
+        logger.error(f"发送邮件通知时发生未知错误: {str(e)}")
+
+
 def main():
+    start_time = time.time() # 记录开始时间
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='政策文档分析工具')
     parser.add_argument('--template', '-t', 
@@ -539,15 +625,24 @@ def main():
     
     logger.info(f"找到 {len(input_files)} 个输入文件")
     
-    # 依次处理每个输入文件，使用process_file_with_threads函数
-    for input_file in input_files:
-        file_path = os.path.join(input_directory, input_file)
-        logger.info(f"处理文件: {input_file}")
-        
-        # 使用process_file_with_threads替代原来的逻辑
-        process_file_with_threads(file_path, models, output_directory, template_name, max_workers, batch_size)
-    
-    logger.info("所有文件处理完成!")
+    processed_files_count = 0 # 计数器
+    total_files = len(input_files) # 总文件数
+
+    with ThreadPoolExecutor(max_workers=args.threads) as executor:
+        # 依次处理每个输入文件，使用process_file_with_threads函数
+        future_to_file = {executor.submit(process_file_with_threads, os.path.join(input_directory, input_file), models, output_directory, template_name, max_workers, batch_size): input_file for input_file in input_files}
+        for future in as_completed(future_to_file):
+            input_file = future_to_file[future]
+            try:
+                if future.exception() is None:
+                    processed_files_count += 1 # 成功处理则计数
+            except Exception as exc:
+                logger.error(f'处理文件 {input_file} 时产生异常: {exc}')
+
+    logger.info("所有文件处理完成。")
+
+    # 在所有文件处理完成后发送邮件
+    send_completion_email(processed_files_count, total_files, start_time)
 
 if __name__ == "__main__":
     main()

@@ -16,10 +16,14 @@ import re  # 添加缺失的re模块导入
 from dotenv import load_dotenv
 import logging
 from colorama import init, Fore, Style
+from dotenv import load_dotenv # <--- 添加导入
 
 # 添加项目根目录到Python路径
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
+
+# 加载 .env 文件中的环境变量 <--- 添加这行
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 # 初始化colorama
 init()
