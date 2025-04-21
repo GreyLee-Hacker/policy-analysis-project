@@ -1,6 +1,6 @@
 # 政策分析项目
 
-本项目旨在使用多种大型语言模型(LLM)分析政策文档，高效地提取和处理政策信息。项目支持并行调用多个模型，并将结果以JSON格式保存。
+本项目旨在使用多种大型语言模型(LLM)分析政策文档，高效地提取和处理政策信息。项目支持并行调用多个模型，并将结果以JSON格式保存，且分析完成后可通过邮件发送通知。
 
 ## 项目结构
 
@@ -50,7 +50,15 @@ pip install -r requirements.txt
 ```
 
 4. 配置环境变量
-   - 在`.env`文件中填入您的API密钥信息
+   - **重要**: 复制 `.env.example` 文件（如果存在）或创建一个名为 `.env` 的新文件。
+   - 在 `.env` 文件中填入您的API密钥信息（如 `API_KEY`, `OPENAI_API_KEY`, `BAIDU_API_KEY`, `BAIDU_SECRET_KEY` 等）。
+   - **新增**: 配置邮件通知参数（可选）：
+     - `SMTP_SERVER`: 您的SMTP服务器地址 (例如: smtp.example.com)
+     - `SMTP_PORT`: SMTP服务器端口 (例如: 587 或 465)
+     - `SMTP_USERNAME`: 您的邮箱账号
+     - `SMTP_PASSWORD`: 您的邮箱密码或应用授权码
+     - `EMAIL_RECIPIENT`: 接收通知的邮箱地址
+   - **优化**: 项目脚本 (`run_analysis.py`, `manage_models.py`, `test_models.py` 等) 现在统一从 `.env` 文件加载配置，提高了配置管理的便捷性和安全性。
 
 ## 使用方法
 
@@ -102,12 +110,12 @@ python scripts/manage_models.py
 - **显示当前配置的模型**: 查看所有已配置的模型及其分类
 - **添加新模型**: 通过交互式界面添加新模型到配置中
 - **移除现有模型**: 从配置中删除不需要的模型
+- **设置/取消默认模型**: 方便切换常用模型
 - **测试模型连接**: 测试特定模型是否能正常调用
-- **测试API连接**: 测试阿里云、OpenAI和百度API的连接状态
+- **测试API连接**: 测试阿里云、OpenAI和百度API的连接状态（依赖于`.env`中的配置）
+- **配置本地模型**: 引导设置本地部署模型的URL等参数
 - **自动代码更新功能**：当您添加新的阿里云模型时，工具会自动修改src/services/llm_service.py文件以支持该模型，无需手动编写代码。如果您添加非阿里云类别的模型（如百度、OpenAI等），可能需要手动扩展相应的代码。
-
-<!-- 示例操作: -->
-<!-- ![模型管理工具演示](docs/images/model_management_tool.png) -->
+**优化**: 该工具现在更可靠地从 `.env` 文件加载 API 密钥和其他配置。
 
 ### 5. 提示词模板选择
 
@@ -168,6 +176,8 @@ python scripts/run_analysis.py --input data/input/specific_file.txt
 # 综合使用多个参数
 python scripts.run_analysis.py --models qwen-max,qwen2-72b-instruct --template elements
 ```
+
+**新增**: 如果您在 `.env` 文件中正确配置了SMTP参数，`run_analysis.py` 脚本在处理完所有文件后会自动发送一封包含处理摘要（处理文件数、耗时等）的邮件通知到您指定的邮箱。
 
 ### 7. 查看结果
 
@@ -441,24 +451,26 @@ python scripts/run_analysis.py --models chatglm-local --input data/input/your_po
 ## 常见问题
 
 1. **模型访问错误**
-   - 检查API密钥是否正确设置
+   - 检查API密钥是否在 `.env` 文件中正确设置
    - 确认网络连接正常
    - 使用`scripts/manage_models.py`工具中的"测试API连接"功能检查API状态
    - 查看日志文件了解详细错误信息
 
 2. **处理速度慢**
-   - 考虑减少并行处理的模型数量
+   - 考虑减少并行处理的模型数量 (`--threads` 参数)
    - 使用响应更快的模型（如qwen-turbo）
 
 3. **结果质量不佳**
    - 尝试使用更强大的模型（如qwen-max或gpt-4）
-   - 优化输入的提示词
+   - 优化输入的提示词 (`src/config/prompt_templates.py`)
 
 4. **无法找到或使用某些模型**
    - 使用`scripts/list_available_models.py`检查当前账户可用的模型
-   - 使用模型管理工具添加新的可用模型
+   - 使用模型管理工具 (`scripts/manage_models.py`) 添加新的可用模型
    - 确保您的API密钥有权限访问这些模型
 
-<!-- ## 授权协议 -->
-
-<!-- 本项目采用MIT许可证。详情请参阅LICENSE文件。 -->
+5. **邮件通知未收到**
+   - 确认 `.env` 文件中的 `SMTP_*` 和 `EMAIL_RECIPIENT` 参数已正确配置。
+   - 检查邮箱密码或授权码是否正确。
+   - 检查SMTP服务器地址和端口是否适用于您的邮箱提供商。
+   - 查看 `logs/main.log` 文件中是否有邮件发送失败的错误信息。

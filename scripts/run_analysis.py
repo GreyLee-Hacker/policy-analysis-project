@@ -11,6 +11,7 @@ import glob
 import re
 from dotenv import load_dotenv # <--- 添加导入
 import smtplib
+import socket
 from email.mime.text import MIMEText
 
 # 添加项目根目录到Python路径
