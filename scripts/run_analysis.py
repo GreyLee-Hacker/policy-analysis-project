@@ -9,7 +9,7 @@ import json
 import argparse
 import glob
 import re
-from dotenv import load_dotenv # <--- 添加导入
+from dotenv import load_dotenv
 import smtplib
 import socket
 from email.mime.text import MIMEText
@@ -17,7 +17,7 @@ from email.mime.text import MIMEText
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# 加载 .env 文件中的环境变量 <--- 添加这行
+# 加载 .env 文件中的环境变量
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 from src.utils.response_parser import parse_housing_elements
@@ -75,6 +75,9 @@ def chunk_text_into_sentences(text):
     # 过滤空句子
     return [s.strip() for s in sentences if s.strip()]
 
+# 设置分片文件大小常量 - 每个分片文件存储的句子数量
+CHUNK_SIZE = 1000
+
 def process_sentence(sentence, template, models):
     """处理单个句子"""
     # 应用模板，将句子插入模板中
@@ -88,7 +91,7 @@ def process_sentence(sentence, template, models):
         "results": results
     }
 
-def process_batch(batch_sentences, template, models, lock, progress_data, progress_file, incremental_file, current_processed):
+def process_batch(batch_sentences, template, models, lock, progress_data, progress_file, incremental_file, current_processed, shard_index):
     """处理一批句子的worker函数"""
     batch_results = []
     
@@ -134,35 +137,61 @@ def process_batch(batch_sentences, template, models, lock, progress_data, progre
                 with open(progress_file, 'w', encoding='utf-8') as f:
                     json.dump(progress_data, f, ensure_ascii=False, indent=2)
         
-        # 批次处理完成后，将结果追加到增量文件（需要加锁）
+        # 批次处理完成后，将结果追加到当前分片文件（需要加锁）
         with lock:
             try:
-                # 先尝试读取现有结果
+                # 计算当前分片文件路径
+                current_shard_index = shard_index[0]
+                # 分片索引可能会在函数执行过程中被其他线程更新，所以需要重新获取
+                shard_file = get_shard_file_path(incremental_file, current_shard_index)
+                
+                # 先尝试读取现有分片结果
                 existing_results = []
                 try:
-                    with open(incremental_file, 'r', encoding='utf-8') as f:
-                        file_content = f.read().strip()
-                        if file_content:  # 确保文件不为空
-                            existing_results = json.loads(file_content)
-                        else:
-                            existing_results = []
+                    if os.path.exists(shard_file):
+                        with open(shard_file, 'r', encoding='utf-8') as f:
+                            file_content = f.read().strip()
+                            if file_content:  # 确保文件不为空
+                                existing_results = json.loads(file_content)
+                            else:
+                                existing_results = []
+                    else:
+                        existing_results = []
                 except (json.JSONDecodeError, FileNotFoundError) as e:
-                    thread_logger.warning(f"读取增量文件失败，将创建新文件: {str(e)}")
+                    thread_logger.warning(f"读取分片文件失败，将创建新文件: {str(e)}")
                     existing_results = []
                 
                 # 检查existing_results是否为列表
                 if not isinstance(existing_results, list):
-                    thread_logger.warning(f"增量文件内容不是列表格式，将重置为空列表")
+                    thread_logger.warning(f"分片文件内容不是列表格式，将重置为空列表")
                     existing_results = []
                 
                 # 追加新结果
                 existing_results.extend(batch_results)
                 
-                # 强制先清空文件内容再写入，避免追加到损坏的内容
-                with open(incremental_file, 'w', encoding='utf-8') as f:
-                    json.dump(existing_results, f, ensure_ascii=False, indent=2)
+                # 检查分片是否达到预定大小，如果是则创建新分片
+                if len(existing_results) >= CHUNK_SIZE:
+                    # 将当前分片写入文件
+                    with open(shard_file, 'w', encoding='utf-8') as f:
+                        json.dump(existing_results, f, ensure_ascii=False, indent=2)
+                    thread_logger.info(f"分片文件 {shard_file} 已达到 {len(existing_results)} 条结果，创建新分片")
+                    
+                    # 更新分片索引
+                    shard_index[0] += 1
+                    # 创建新的空分片文件
+                    new_shard_file = get_shard_file_path(incremental_file, shard_index[0])
+                    with open(new_shard_file, 'w', encoding='utf-8') as f:
+                        json.dump([], f, ensure_ascii=False, indent=2)
+                else:
+                    # 将结果写入现有分片
+                    with open(shard_file, 'w', encoding='utf-8') as f:
+                        json.dump(existing_results, f, ensure_ascii=False, indent=2)
                 
-                thread_logger.info(f"批次处理结果已追加到文件: {incremental_file}，当前共 {len(existing_results)} 条结果")
+                thread_logger.info(f"批次处理结果已追加到分片文件: {shard_file}，当前共 {len(existing_results)} 条结果")
+                # 更新进度文件中的分片信息
+                progress_data["current_shard"] = shard_index[0]
+                with open(progress_file, 'w', encoding='utf-8') as f:
+                    json.dump(progress_data, f, ensure_ascii=False, indent=2)
             except Exception as e:
                 thread_logger.error(f"保存增量结果时出错: {str(e)}")
                 import traceback
@@ -174,6 +203,74 @@ def process_batch(batch_sentences, template, models, lock, progress_data, progre
         import traceback
         logger.error(traceback.format_exc())
         return []
+
+def get_shard_file_path(incremental_file, shard_index):
+    """根据基础路径和分片索引计算分片文件路径"""
+    base_path = os.path.splitext(incremental_file)[0]
+    return f"{base_path}_shard_{shard_index:04d}.json"
+
+def get_shards_info(base_incremental_path):
+    """获取指定基础路径的所有分片文件信息"""
+    base_path = os.path.splitext(base_incremental_path)[0]
+    pattern = f"{base_path}_shard_*.json"
+    shard_files = glob.glob(pattern)
+    
+    # 排序分片文件
+    shard_files.sort()
+    
+    # 提取最大的分片索引
+    max_shard_index = -1
+    total_items = 0
+    
+    for shard_file in shard_files:
+        try:
+            # 从文件名提取分片索引
+            match = re.search(r'_shard_(\d+)\.json$', shard_file)
+            if match:
+                shard_index = int(match.group(1))
+                max_shard_index = max(max_shard_index, shard_index)
+                
+                # 读取分片文件获取条目数
+                if os.path.exists(shard_file):
+                    with open(shard_file, 'r', encoding='utf-8') as f:
+                        items = json.load(f)
+                        if isinstance(items, list):
+                            total_items += len(items)
+        except Exception as e:
+            logger.error(f"读取分片文件 {shard_file} 时出错: {str(e)}")
+    
+    return {
+        "max_shard_index": max_shard_index,
+        "total_items": total_items,
+        "shard_files": shard_files
+    }
+
+def merge_shards(base_incremental_path, output_file):
+    """合并所有分片文件到一个输出文件"""
+    base_path = os.path.splitext(base_incremental_path)[0]
+    pattern = f"{base_path}_shard_*.json"
+    shard_files = glob.glob(pattern)
+    
+    # 排序分片文件
+    shard_files.sort()
+    
+    all_results = []
+    for shard_file in shard_files:
+        try:
+            with open(shard_file, 'r', encoding='utf-8') as f:
+                items = json.load(f)
+                if isinstance(items, list):
+                    all_results.extend(items)
+                    logger.info(f"从分片 {shard_file} 中读取了 {len(items)} 条结果")
+        except Exception as e:
+            logger.error(f"合并分片文件 {shard_file} 时出错: {str(e)}")
+    
+    # 写入最终输出文件
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(all_results, f, ensure_ascii=False, indent=2)
+    
+    logger.info(f"已将所有分片合并到输出文件 {output_file}，共 {len(all_results)} 条结果")
+    return len(all_results)
 
 def process_file_with_threads(file_path, models, output_dir, template_name, max_workers=2, batch_size=3, resume=False, start_from=None, resume_file=None, resume_doc_id=None):
     """使用多线程处理单个文件，大幅提高处理速度"""
@@ -254,6 +351,15 @@ def process_file_with_threads(file_path, models, output_dir, template_name, max_
         # 检查是否已有进度文件和断点续处理参数
         start_position = 0
         existing_processed = []
+        current_shard_index = 0  # 默认从第0个分片开始
+        
+        # 创建增量结果目录
+        result_dir = os.path.join(output_dir, template_name, "incremental")
+        os.makedirs(result_dir, exist_ok=True)
+        
+        # 为当前文件创建分片存储的基础路径
+        incremental_base = os.path.join(result_dir, f"{filename}_incremental")
+        incremental_file = f"{incremental_base}.json"  # 保留旧名称用于兼容
         
         # 优先处理特定文件和 doc_id 的续跑逻辑
         if resume_file and resume_doc_id is not None and file_basename == resume_file:
@@ -281,10 +387,21 @@ def process_file_with_threads(file_path, models, output_dir, template_name, max_
             else:
                 logger.warning(f"在文件 '{resume_file}' 中未找到指定的 doc_id '{resume_doc_id}'，将从头处理该文件。")
                 start_position = 0 # 未找到则从头开始
+            # 如果是特定文件续跑，尝试加载分片信息
+            shards_info = get_shards_info(incremental_file)
+            current_shard_index = shards_info["max_shard_index"] + 1 if shards_info["max_shard_index"] >= 0 else 0
+            existing_processed = shards_info["total_items"]
+            
+            logger.info(f"从增量分片文件中加载了 {existing_processed} 条已处理结果，当前分片索引: {current_shard_index}")
+        
         elif resume_file and file_basename != resume_file:
              logger.info(f"当前文件 '{file_basename}' 不是指定的续跑文件 '{resume_file}'，将从头处理。")
              start_position = 0 # 其他文件从头开始
              existing_processed = [] # 其他文件不加载历史结果
+             # 其他文件从头开始，清空所有分片
+             existing_processed = []
+             current_shard_index = 0
+        
         elif resume and os.path.exists(progress_file): # 处理通用的 resume 逻辑 (如果没有指定特定文件)
             try:
                 with open(progress_file, 'r', encoding='utf-8') as f:
@@ -292,59 +409,45 @@ def process_file_with_threads(file_path, models, output_dir, template_name, max_
                     # 只有在没有指定特定文件续跑时，才使用进度文件中的位置
                     if not (resume_file and file_basename == resume_file):
                         start_position = existing_progress.get("processed_sentences", 0)
-                        logger.info(f"发现进度文件，从第 {start_position} 个句子继续处理")
+                        # 获取分片索引
+                        current_shard_index = existing_progress.get("current_shard", 0)
+                        logger.info(f"发现进度文件，从第 {start_position} 个句子继续处理，分片索引: {current_shard_index}")
             except (json.JSONDecodeError, FileNotFoundError) as e:
                 logger.warning(f"读取进度文件失败: {str(e)}，将从头开始处理")
                 start_position = 0
+                current_shard_index = 0
         elif start_from is not None and start_from >= 0: # 处理 start_from 参数 (优先级低于特定文件续跑)
              if not (resume_file and file_basename == resume_file):
                  start_position = start_from
                  logger.info(f"根据参数指定，从第 {start_position} 个句子开始处理")
         
         
-        # 创建增量结果目录
-        result_dir = os.path.join(output_dir, template_name, "incremental")
-        os.makedirs(result_dir, exist_ok=True)
-        
-        # 为当前文件创建专门的增量结果文件
-        incremental_file = os.path.join(result_dir, f"{filename}_incremental.json")
-        
-        # 检查是否存在已处理的结果，避免重复处理 (仅在续跑时加载)
-        # 注意：上面特定文件续跑逻辑已经处理了 existing_processed 的加载
-        if start_position > 0 and not (resume_file and file_basename == resume_file): # 只有在通用续跑时才加载
-            if os.path.exists(incremental_file):
+        # 如果从头开始处理，清空所有分片文件
+        if start_position == 0:
+            # 删除所有与此文件相关的现有分片文件
+            base_path = os.path.splitext(incremental_file)[0]
+            pattern = f"{base_path}_shard_*.json"
+            shard_files = glob.glob(pattern)
+            for shard_file in shard_files:
                 try:
-                    with open(incremental_file, 'r', encoding='utf-8') as f:
-                        loaded_data = json.load(f)
-                        if isinstance(loaded_data, list):
-                             existing_processed = loaded_data
-                             logger.info(f"读取到 {len(existing_processed)} 个已处理结果")
-                        else:
-                             logger.warning(f"增量文件 '{incremental_file}' 内容格式不正确，将忽略。")
-                             existing_processed = []
-                except (json.JSONDecodeError, FileNotFoundError) as e:
-                    logger.warning(f"读取增量文件失败: {str(e)}，将创建新的增量文件")
-                    existing_processed = []
-            else:
-                 existing_processed = [] # 文件不存在则为空
-        
-        # 如果增量文件不存在或不续跑，创建一个空的结果列表文件
-        if not os.path.exists(incremental_file) or start_position == 0:
-             # 如果是特定文件续跑，即使 start_position > 0，也可能需要清空旧的增量文件
-             # 但上面的逻辑已经加载了 existing_processed，所以这里只在文件不存在时创建
-             if not os.path.exists(incremental_file):
-                 with open(incremental_file, 'w', encoding='utf-8') as f:
-                     json.dump([], f, ensure_ascii=False)
-                 existing_processed = []
-             # 如果 start_position 为 0 (从头开始)，确保 existing_processed 为空
-             if start_position == 0:
-                 existing_processed = []
-                 # 如果文件存在但要从头跑，清空它
-                 if os.path.exists(incremental_file):
-                      logger.info(f"从头处理文件 '{file_basename}'，清空现有增量文件 '{incremental_file}'。")
-                      with open(incremental_file, 'w', encoding='utf-8') as f:
-                          json.dump([], f, ensure_ascii=False)
-        
+                    os.remove(shard_file)
+                    logger.info(f"删除旧的分片文件: {shard_file}")
+                except Exception as e:
+                    logger.warning(f"无法删除旧的分片文件 {shard_file}: {str(e)}")
+            
+            # 创建第一个空的分片文件
+            first_shard_file = get_shard_file_path(incremental_file, 0)
+            with open(first_shard_file, 'w', encoding='utf-8') as f:
+                json.dump([], f, ensure_ascii=False, indent=2)
+            logger.info(f"创建了新的分片文件: {first_shard_file}")
+            current_shard_index = 0
+        else:
+            # 确保当前分片文件存在
+            current_shard_file = get_shard_file_path(incremental_file, current_shard_index)
+            if not os.path.exists(current_shard_file):
+                with open(current_shard_file, 'w', encoding='utf-8') as f:
+                    json.dump([], f, ensure_ascii=False, indent=2)
+                logger.info(f"创建了新的分片文件: {current_shard_file}")
         
         # 初始化进度记录
         # 注意：这里的 processed_sentences 应该反映实际从增量文件加载的数量
@@ -357,7 +460,8 @@ def process_file_with_threads(file_path, models, output_dir, template_name, max_
             "status": "processing",
             "thread_count": max_workers,
             "batch_size": batch_size,
-            "completion_percentage": round(start_position / len(sentences) * 100, 2) if sentences else 0
+            "completion_percentage": round(start_position / len(sentences) * 100, 2) if sentences else 0,
+            "current_shard": current_shard_index  # 添加当前分片索引信息
         }
         
         # 保存初始进度
@@ -368,6 +472,8 @@ def process_file_with_threads(file_path, models, output_dir, template_name, max_
         file_lock = threading.Lock()
         # current_processed 应该从 start_position 开始计数
         current_processed = [start_position] # 使用列表作为可变对象，用于跨线程更新
+        # 当前分片索引 - 使用列表作为可变对象
+        shard_index = [current_shard_index]
         
         # 根据断点位置处理句子
         sentences_to_process = []
@@ -407,7 +513,8 @@ def process_file_with_threads(file_path, models, output_dir, template_name, max_
                     progress_data, # 传递 progress_data 字典本身
                     progress_file,
                     incremental_file,
-                    current_processed # 传递包含当前计数的列表
+                    current_processed, # 传递包含当前计数的列表
+                    shard_index  # 传递分片索引
                 ): i for i, batch in enumerate(batches)
             }
             
@@ -432,6 +539,7 @@ def process_file_with_threads(file_path, models, output_dir, template_name, max_
         progress_data["processed_sentences"] = final_processed_count
         progress_data["completion_percentage"] = round(final_processed_count / len(sentences) * 100, 2) if sentences else 100
         progress_data["completion_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        progress_data["final_shard_index"] = shard_index[0]
         
         with open(progress_file, 'w', encoding='utf-8') as f:
             json.dump(progress_data, f, ensure_ascii=False, indent=2)
@@ -442,27 +550,18 @@ def process_file_with_threads(file_path, models, output_dir, template_name, max_
         all_output_dir = os.path.join(output_dir, template_name, "all")
         os.makedirs(all_output_dir, exist_ok=True)
         
-        # 保存最终结果 (从增量文件读取)
+        # 保存最终结果 (合并所有分片文件)
         final_output_file = os.path.join(all_output_dir, f"{filename}_sentences.json")
         
-        try:
-            with open(incremental_file, 'r', encoding='utf-8') as f:
-                final_results = json.load(f)
-                if not isinstance(final_results, list):
-                     logger.error(f"最终增量文件 '{incremental_file}' 内容格式错误，无法生成汇总文件。")
-                     final_results = [] # 置为空列表避免写入错误
-        except (json.JSONDecodeError, FileNotFoundError) as e:
-            logger.error(f"无法读取最终增量结果文件 '{incremental_file}' ({e})，无法生成汇总文件。")
-            final_results = [] # 置为空列表避免写入错误
-        
-        # 只有在 final_results 不为空时才写入
-        if final_results:
-             with open(final_output_file, 'w', encoding='utf-8') as f:
-                 json.dump(final_results, f, ensure_ascii=False, indent=2)
-             logger.info(f"所有句子分析结果已保存到 {final_output_file}")
+        # 当处理完毕或处理完成度超过阈值(例如90%)时，合并所有分片
+        if progress_data["completion_percentage"] >= 90 or progress_data["status"] == "completed":
+            try:
+                total_merged = merge_shards(incremental_file, final_output_file)
+                logger.info(f"成功合并所有分片文件，共 {total_merged} 条结果已保存到 {final_output_file}")
+            except Exception as e:
+                logger.error(f"合并分片文件时出错: {str(e)}")
         else:
-             logger.warning(f"由于增量文件为空或读取失败，未生成最终汇总文件 '{final_output_file}'")
-        
+            logger.info(f"文件处理尚未完成，不合并分片文件。当前完成度: {progress_data['completion_percentage']}%")
         
         return True
     except Exception as e:
@@ -697,6 +796,11 @@ def main():
                        help='指定要续跑的文件名 (例如: 地方法规2_cleaned1_extract.json)')
     parser.add_argument('--resume-doc-id', type=str, # <-- doc_id 通常是字符串
                        help='指定在 resume-file 中从哪个 doc_id 开始处理')
+    # 运行分析时检查是否有命令行选项指定合并所有分片
+    parser.add_argument('--merge-shards', action='store_true',
+                      help='合并所有分片文件到一个输出文件，不处理新的句子')
+    parser.add_argument('--merge-file',
+                      help='指定要合并分片的文件名 (如 地方法规2_cleaned1_extract.json)')
 
     args = parser.parse_args()
 
@@ -825,6 +929,31 @@ def main():
 
     # 在所有文件处理完成后发送邮件
     send_completion_email(processed_files_count, total_files, start_time)
+
+    # 如果指定了合并分片选项
+    if args.merge_shards:
+        if args.merge_file:
+            # 构建增量文件路径
+            merge_filename = os.path.splitext(args.merge_file)[0]
+            incremental_base = os.path.join(output_directory, template_name, "incremental", f"{merge_filename}_incremental")
+            incremental_file = f"{incremental_base}.json"
+            
+            # 输出文件路径
+            all_output_dir = os.path.join(output_directory, template_name, "all")
+            os.makedirs(all_output_dir, exist_ok=True)
+            final_output_file = os.path.join(all_output_dir, f"{merge_filename}_sentences.json")
+            
+            logger.info(f"开始合并文件 {args.merge_file} 的所有分片")
+            try:
+                total_merged = merge_shards(incremental_file, final_output_file)
+                logger.info(f"成功合并分片文件，共 {total_merged} 条结果已保存到 {final_output_file}")
+                return
+            except Exception as e:
+                logger.error(f"合并分片文件时出错: {str(e)}")
+                return
+        else:
+            parser.error("使用 --merge-shards 选项时必须指定 --merge-file 参数")
+            return
 
 if __name__ == "__main__":
     main()

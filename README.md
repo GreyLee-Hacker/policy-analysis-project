@@ -153,7 +153,7 @@ python scripts/manage_models.py
 ### 6. 运行分析
 
 ```bash
-# 使用默认配置运行分析 (默认线程数为 3)
+# 使用默认配置运行分析 (默认线程数为 2)
 python scripts/run_analysis.py
 
 # 指定使用的模型
@@ -176,6 +176,9 @@ python scripts/run_analysis.py --resume
 # 例如：从 地方法规2_cleaned1_extract.json 文件的 doc_id 1016 开始
 python scripts/run_analysis.py --resume-file 地方法规2_cleaned1_extract.json --resume-doc-id 1016
 
+# 仅合并特定文件的所有分片结果 (不处理新数据)
+python scripts/run_analysis.py --merge-shards --merge-file 地方法规2_cleaned1_extract.json -t housing_with_examples
+
 # 综合使用多个参数
 python scripts/run_analysis.py --models qwen-max,qwen2-72b-instruct --template elements --threads 2
 ```
@@ -185,7 +188,33 @@ python scripts/run_analysis.py --models qwen-max,qwen2-72b-instruct --template e
 - 当使用 `--resume-file` 和 `--resume-doc-id` 时，只有指定的文件会从 `doc_id` 对应的句子开始处理，其他所有文件都会从头开始处理，并且它们之前的增量结果会被清除。
 - 通用断点续跑 (`--resume` 或 `--start-from`) 与特定文件续跑 (`--resume-file`/`--resume-doc-id`) 互斥，后者优先级更高。
 
-### 7. 查看结果
+### 7. 大文件分片处理
+
+当处理大量政策文档时，为了提高性能和避免 IO 瓶颈，系统会将结果分片存储：
+
+- **分片策略**: 每个分片文件存储固定数量的结果（默认为 1000 条），超过此阈值自动创建新分片
+- **命名规则**: `[文件名]_incremental_shard_[序号].json`（如 `地方法规2_cleaned1_extract_incremental_shard_0000.json`）
+- **自动合并**: 处理完成后（或完成度达到 90% 以上）会自动将所有分片合并为一个文件
+- **手动合并**: 可随时使用 `--merge-shards` 参数手动触发合并操作
+
+分片处理的主要优势：
+
+1. **减轻内存压力**: 无需在内存中保存全部处理结果
+2. **提高 IO 效率**: 读写小文件比操作大文件更快
+3. **降低数据丢失风险**: 即使程序中断，也只会丢失当前正在处理的分片的数据
+4. **加速断点续跑**: 重启后只需读取当前分片，无需加载全部历史数据
+
+示例用法：
+
+```bash
+# 处理完成后，手动合并特定文件的分片
+python scripts/run_analysis.py --merge-shards --merge-file 地方法规2_cleaned1_extract.json -t housing_with_examples
+
+# 从特定 doc_id 开始处理，并使用分片存储（自动启用）
+python scripts/run_analysis.py --resume-file 地方法规2_cleaned1_extract.json --resume-doc-id 1016 -t housing_with_examples
+```
+
+### 8. 查看结果
 
 分析结果将保存在`data/output/`目录中，每个模型的结果会保存在单独的JSON文件中，同时各个模型的结果也会汇总到all文件夹中便于模型比较。
 日志文件保存在`logs/`目录，可用于查看处理过程和诊断问题。
